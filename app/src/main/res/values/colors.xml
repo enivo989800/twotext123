@@ -1,0 +1,6 @@
+<resources>
+    <color name="app_primary">#0F766E</color>
+    <color name="app_primary_dark">#115E59</color>
+    <color name="app_background">#F4F7FB</color>
+    <color name="app_text">#1F2937</color>
+</resources>
