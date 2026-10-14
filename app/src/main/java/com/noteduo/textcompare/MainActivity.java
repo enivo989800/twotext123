@@ -130,6 +130,7 @@ public final class MainActivity extends Activity {
     private List<Range> diffA = new ArrayList<>();
     private List<Range> diffB = new ArrayList<>();
     private int diffCount;
+    private List<Diff> diffs = new ArrayList<>();
     private boolean resultCurrent;
     private boolean suppressCompare;
     private Dialog editorDialog;
@@ -752,8 +753,7 @@ public final class MainActivity extends Activity {
         View summaryCard = content.getChildAt(2);
         if (summaryCard instanceof LinearLayout && ((LinearLayout) summaryCard).getChildCount() > 0) {
             TextView summary = (TextView) ((LinearLayout) summaryCard).getChildAt(0);
-            summary.setText(!resultCurrent ? "比较结果待更新"
-                    : diffCount == 0 ? "文本一致 · 0 处差异" : "发现 " + diffCount + " 处差异");
+            summary.setText(diffSummaryText());
         }
         differenceList.removeAllViews();
         if (!resultCurrent || diffCount == 0) {
@@ -763,39 +763,37 @@ public final class MainActivity extends Activity {
             differenceList.addView(empty);
             return;
         }
-        for (int i = 0; i < diffCount; i++) {
+        int shown = Math.min(diffs.size(), MAX_DIFF_CARDS);
+        for (int i = 0; i < shown; i++) {
             final int index = i;
-            Range ra = i < diffA.size() ? diffA.get(i) : null;
-            Range rb = i < diffB.size() ? diffB.get(i) : null;
+            final Diff d = diffs.get(i);
             LinearLayout card = makeCard();
             card.setPadding(dp(12), dp(11), dp(12), dp(11));
             TextView heading = new TextView(this);
-            heading.setText("差异 " + (i + 1) + "  ·  A 第 " + lineNumber(contentA, ra)
-                    + " 行 / B 第 " + lineNumber(contentB, rb) + " 行");
+            heading.setText("差异 " + (i + 1) + " / " + diffs.size() + "  ·  " + diffTypeName(d));
             heading.setTextColor(COLOR_PRIMARY);
-            heading.setTextSize(12);
+            heading.setTextSize(12.5f);
             heading.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
             card.addView(heading);
-            TextView aText = new TextView(this);
-            aText.setText("A  " + excerpt(contentA, ra));
-            aText.setTextColor(COLOR_DIFF_A_TEXT);
-            aText.setBackground(roundRect(COLOR_DIFF_A, dp(8), 0, Color.TRANSPARENT));
-            aText.setTextSize(12.5f);
-            aText.setPadding(dp(9), dp(8), dp(9), dp(8));
-            LinearLayout.LayoutParams textParams = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams aParams = new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-            textParams.topMargin = dp(8);
-            card.addView(aText, textParams);
-            TextView bText = new TextView(this);
-            bText.setText("B  " + excerpt(contentB, rb));
-            bText.setTextColor(COLOR_DIFF_B_TEXT);
-            bText.setBackground(roundRect(COLOR_DIFF_B, dp(8), 0, Color.TRANSPARENT));
-            bText.setTextSize(12.5f);
-            bText.setPadding(dp(9), dp(8), dp(9), dp(8));
+            aParams.topMargin = dp(8);
+            card.addView(buildDiffSide(contentA, d, true), aParams);
             LinearLayout.LayoutParams bParams = new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-            bParams.topMargin = dp(5);
-            card.addView(bText, bParams);
+            bParams.topMargin = dp(6);
+            card.addView(buildDiffSide(contentB, d, false), bParams);
+            String change = markSummary(d);
+            if (!change.isEmpty()) {
+                TextView changeView = new TextView(this);
+                changeView.setText(change);
+                changeView.setTextColor(COLOR_MUTED);
+                changeView.setTextSize(12f);
+                LinearLayout.LayoutParams changeParams = new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                changeParams.topMargin = dp(8);
+                card.addView(changeView, changeParams);
+            }
             card.setClickable(true);
             card.setFocusable(true);
             card.setOnClickListener(v -> {
@@ -808,6 +806,135 @@ public final class MainActivity extends Activity {
             cardParams.bottomMargin = dp(9);
             differenceList.addView(card, cardParams);
         }
+        if (diffs.size() > shown) {
+            TextView more = bodyLabel("仅列出前 " + shown + " 处差异，其余请在对照页用上一处/下一处查看。");
+            more.setGravity(Gravity.CENTER);
+            more.setPadding(dp(12), dp(8), dp(12), dp(16));
+            differenceList.addView(more);
+        }
+    }
+
+    private String diffSummaryText() {
+        if (!resultCurrent) return "比较结果待更新";
+        if (diffCount == 0) return "文本一致 · 0 处差异";
+        int changed = 0, onlyA = 0, onlyB = 0;
+        for (Diff d : diffs) {
+            if (d.type == Diff.CHANGED) changed++;
+            else if (d.type == Diff.ONLY_A) onlyA++;
+            else onlyB++;
+        }
+        List<String> parts = new ArrayList<>();
+        if (changed > 0) parts.add("内容不同 " + changed);
+        if (onlyA > 0) parts.add("仅 A 有 " + onlyA);
+        if (onlyB > 0) parts.add("仅 B 有 " + onlyB);
+        return "发现 " + diffCount + " 处差异（" + android.text.TextUtils.join(" · ", parts) + "）";
+    }
+
+    private static String diffTypeName(Diff d) {
+        if (d.type == Diff.ONLY_A) return "仅 A 有（B 中缺少）";
+        if (d.type == Diff.ONLY_B) return "仅 B 有（A 中缺少）";
+        return "两边内容不同";
+    }
+
+    /** One side (A or B) of a difference card: line numbers plus the block text with differing words coloured. */
+    private View buildDiffSide(String text, Diff d, boolean sideA) {
+        int bg = sideA ? COLOR_DIFF_A : COLOR_DIFF_B;
+        int fg = sideA ? COLOR_DIFF_A_TEXT : COLOR_DIFF_B_TEXT;
+        int lineFrom = sideA ? d.aLineFrom : d.bLineFrom;
+        int lineTo = sideA ? d.aLineTo : d.bLineTo;
+        String name = sideA ? "A" : "B";
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(9), dp(8), dp(9), dp(8));
+        box.setBackground(roundRect(COLOR_EDITOR, dp(8), dp(1), COLOR_BORDER));
+        TextView label = new TextView(this);
+        label.setTextColor(fg);
+        label.setTextSize(11.5f);
+        label.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        if (lineTo <= lineFrom) {
+            label.setText(name + " · 此处没有对应内容");
+            box.addView(label);
+            return box;
+        }
+        label.setText(name + " · 第 " + (lineFrom + 1) + (lineTo - lineFrom > 1 ? "–" + lineTo : "") + " 行");
+        box.addView(label);
+        TextView body = new TextView(this);
+        body.setText(blockPreview(text, d, sideA, bg, fg));
+        body.setTextColor(COLOR_TEXT);
+        body.setTextSize(13.5f);
+        body.setLineSpacing(dp(2), 1.0f);
+        body.setPadding(0, dp(4), 0, 0);
+        box.addView(body);
+        return box;
+    }
+
+    private CharSequence blockPreview(String text, Diff d, boolean sideA, int bg, int fg) {
+        int bs = sideA ? d.aStart : d.bStart;
+        int be = sideA ? d.aEnd : d.bEnd;
+        List<Range> marks = sideA ? d.aMarks : d.bMarks;
+        bs = Math.max(0, Math.min(bs, text.length()));
+        be = Math.max(bs, Math.min(be, text.length()));
+        while (be > bs && (text.charAt(be - 1) == '\n' || text.charAt(be - 1) == '\r')) be--;
+        if (be <= bs) return "（空行）";
+        final int maxChars = 700;
+        int from = bs;
+        int to = be;
+        if (be - bs > maxChars) {
+            int focus = marks.isEmpty() ? bs : Math.max(bs, marks.get(0).start);
+            from = Math.max(bs, focus - 80);
+            to = Math.min(be, from + maxChars);
+            from = Math.max(bs, Math.min(from, to - maxChars));
+        }
+        String prefix = from > bs ? "…" : "";
+        String suffix = to < be ? "…" : "";
+        android.text.SpannableStringBuilder out = new android.text.SpannableStringBuilder(
+                prefix + text.substring(from, to) + suffix);
+        int shift = prefix.length() - from;
+        for (Range r : marks) {
+            int s0 = Math.max(r.start, from);
+            int e0 = Math.min(r.end, to);
+            if (e0 <= s0) continue;
+            out.setSpan(new BackgroundColorSpan(bg), s0 + shift, e0 + shift, SpannableString.SPAN_EXCLUSIVE_EXCLUSIVE);
+            out.setSpan(new android.text.style.ForegroundColorSpan(fg), s0 + shift, e0 + shift,
+                    SpannableString.SPAN_EXCLUSIVE_EXCLUSIVE);
+            out.setSpan(new android.text.style.StyleSpan(Typeface.BOLD), s0 + shift, e0 + shift,
+                    SpannableString.SPAN_EXCLUSIVE_EXCLUSIVE);
+        }
+        return out;
+    }
+
+    private String markSummary(Diff d) {
+        if (d.type != Diff.CHANGED) return "";
+        List<String> as = markTexts(contentA, d.aMarks);
+        List<String> bs = markTexts(contentB, d.bMarks);
+        if (as.isEmpty() && bs.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder("变化：");
+        if (as.size() == bs.size()) {
+            int n = Math.min(as.size(), 4);
+            for (int i = 0; i < n; i++) {
+                if (i > 0) sb.append("；");
+                sb.append("「").append(as.get(i)).append("」→「").append(bs.get(i)).append("」");
+            }
+            if (as.size() > n) sb.append("……共 ").append(as.size()).append(" 处");
+        } else {
+            sb.append("A「").append(android.text.TextUtils.join("」「", as.subList(0, Math.min(as.size(), 4))))
+                    .append("」 / B「").append(android.text.TextUtils.join("」「", bs.subList(0, Math.min(bs.size(), 4))))
+                    .append("」");
+        }
+        return sb.toString();
+    }
+
+    private static List<String> markTexts(String text, List<Range> marks) {
+        List<String> out = new ArrayList<>();
+        for (int i = 0; i < marks.size() && i < 8; i++) {
+            Range r = marks.get(i);
+            int start = Math.max(0, Math.min(r.start, text.length()));
+            int end = Math.max(start, Math.min(r.end, text.length()));
+            String value = text.substring(start, end).replace('\n', '↵').replace('\r', ' ');
+            if (value.length() > 24) value = value.substring(0, 24) + "…";
+            out.add(value.isEmpty() ? "（空）" : value);
+        }
+        return out;
     }
 
     private static int lineNumber(String text, Range range) {
@@ -1527,14 +1654,35 @@ public final class MainActivity extends Activity {
         final String b = contentB;
         final long revision = contentRevision;
         final long generation = ++compareGeneration;
+        LATEST_GENERATION = generation;
         updateComparisonStatus("正在比较……");
         compareFuture = compareExecutor.submit(() -> {
-            ComparisonResult result = computeDiff(a, b);
+            ComparisonResult computed = null;
+            Throwable failure = null;
+            TASK_GENERATION.set(generation);
+            try {
+                computed = computeDiff(a, b);
+            } catch (CancellationException superseded) {
+                return;
+            } catch (Throwable t) {
+                failure = t;
+            } finally {
+                TASK_GENERATION.remove();
+            }
+            final ComparisonResult result = computed;
+            final Throwable error = failure;
             runOnUiThread(() -> {
                 if (isFinishing() || revision != contentRevision || generation != compareGeneration) return;
+                if (error != null || result == null) {
+                    clearHighlights();
+                    updateComparisonStatus("比较失败，请点击“比较”重试");
+                    updateToolbarLabels();
+                    return;
+                }
+                diffs = result.diffs;
                 diffA = result.aRanges;
                 diffB = result.bRanges;
-                diffCount = result.differenceCount;
+                diffCount = diffs.size();
                 resultCurrent = true;
                 activeDifference = diffCount > 0 ? 0 : -1;
                 applyHighlightsPreservingScroll();
@@ -1546,13 +1694,15 @@ public final class MainActivity extends Activity {
 
     private void cancelCompareTask() {
         compareGeneration++;
+        LATEST_GENERATION = compareGeneration;
         if (compareFuture != null) {
-            compareFuture.cancel(true);
+            compareFuture.cancel(false);
             compareFuture = null;
         }
     }
 
     private void clearHighlights() {
+        diffs = new ArrayList<>();
         diffA = new ArrayList<>();
         diffB = new ArrayList<>();
         diffCount = 0;
@@ -1567,8 +1717,8 @@ public final class MainActivity extends Activity {
     private void applyHighlightsPreservingScroll() {
         int yA = scrollA.getScrollY();
         int yB = scrollB.getScrollY();
-        textA.setText(highlight(contentA, diffA, COLOR_DIFF_A, COLOR_DIFF_A_TEXT));
-        textB.setText(highlight(contentB, diffB, COLOR_DIFF_B, COLOR_DIFF_B_TEXT));
+        textA.setText(highlight(contentA, diffA, COLOR_DIFF_A, COLOR_DIFF_A_TEXT), TextView.BufferType.SPANNABLE);
+        textB.setText(highlight(contentB, diffB, COLOR_DIFF_B, COLOR_DIFF_B_TEXT), TextView.BufferType.SPANNABLE);
         scrollA.post(() -> scrollA.scrollTo(0, yA));
         scrollB.post(() -> scrollB.scrollTo(0, yB));
     }
@@ -1593,13 +1743,11 @@ public final class MainActivity extends Activity {
     }
 
     private void moveToDifference(int direction) {
-        if (!resultCurrent || diffCount == 0) return;
-        activeDifference = (activeDifference + direction + diffCount) % diffCount;
-        Range ra = activeDifference < diffA.size() ? diffA.get(activeDifference) : null;
-        Range rb = activeDifference < diffB.size() ? diffB.get(activeDifference) : null;
-        // The ranges are merged spans rather than exact LCS operations; synchronize navigation to each side's next span.
-        if (ra != null) scrollToOffset(scrollA, textA, ra.start);
-        if (rb != null) scrollToOffset(scrollB, textB, rb.start);
+        if (!resultCurrent || diffCount == 0 || diffs.isEmpty()) return;
+        activeDifference = ((activeDifference + direction) % diffs.size() + diffs.size()) % diffs.size();
+        Diff d = diffs.get(activeDifference);
+        if (d.aEnd > d.aStart || d.type == Diff.ONLY_B) scrollToOffset(scrollA, textA, d.aStart);
+        if (d.bEnd > d.bStart || d.type == Diff.ONLY_A) scrollToOffset(scrollB, textB, d.bStart);
         updateComparisonStatus("差异 " + (activeDifference + 1) + "/" + diffCount);
     }
 
@@ -1659,23 +1807,48 @@ public final class MainActivity extends Activity {
 
     // ---------- Background text-diff implementation ----------
 
+    private static final ThreadLocal<Long> TASK_GENERATION = new ThreadLocal<>();
+    private static volatile long LATEST_GENERATION;
+    private static final long TOKEN_LCS_CELL_LIMIT = 1_000_000L;
+    private static final int MAX_DIFF_CARDS = 200;
+
     private static final class Range {
         final int start;
         final int end;
         Range(int start, int end) { this.start = start; this.end = end; }
     }
 
+    /** One changed block: a run of lines that differ between A and B. */
+    private static final class Diff {
+        static final int CHANGED = 0;
+        static final int ONLY_A = 1;
+        static final int ONLY_B = 2;
+        final int type;
+        final int aLineFrom, aLineTo, bLineFrom, bLineTo; // 0-based lines, end exclusive
+        final int aStart, aEnd, bStart, bEnd;             // character offsets of the whole block
+        final List<Range> aMarks = new ArrayList<>();     // fine-grained differing text in A
+        final List<Range> bMarks = new ArrayList<>();     // fine-grained differing text in B
+        Diff(int type, int aLineFrom, int aLineTo, int bLineFrom, int bLineTo,
+             int aStart, int aEnd, int bStart, int bEnd) {
+            this.type = type;
+            this.aLineFrom = aLineFrom; this.aLineTo = aLineTo;
+            this.bLineFrom = bLineFrom; this.bLineTo = bLineTo;
+            this.aStart = aStart; this.aEnd = aEnd;
+            this.bStart = bStart; this.bEnd = bEnd;
+        }
+    }
+
     private static final class ComparisonResult {
+        final List<Diff> diffs = new ArrayList<>();
         final List<Range> aRanges = new ArrayList<>();
         final List<Range> bRanges = new ArrayList<>();
-        int differenceCount;
     }
 
     private static final class Line {
-        final String value;
+        final String key;   // content without the trailing line ending
         final int start;
         final int end;
-        Line(String value, int start, int end) { this.value = value; this.start = start; this.end = end; }
+        Line(String key, int start, int end) { this.key = key; this.start = start; this.end = end; }
     }
 
     private static final class Anchor {
@@ -1693,16 +1866,17 @@ public final class MainActivity extends Activity {
         int ai = 0;
         int bi = 0;
         for (Anchor anchor : anchors) {
-            compareLineGap(linesA, ai, anchor.a, linesB, bi, anchor.b, result);
+            addBlock(a, b, linesA, ai, anchor.a, linesB, bi, anchor.b, result);
             ai = anchor.a + 1;
             bi = anchor.b + 1;
         }
-        compareLineGap(linesA, ai, linesA.size(), linesB, bi, linesB.size(), result);
+        addBlock(a, b, linesA, ai, linesA.size(), linesB, bi, linesB.size(), result);
+        for (Diff d : result.diffs) {
+            result.aRanges.addAll(d.aMarks);
+            result.bRanges.addAll(d.bMarks);
+        }
         mergeRanges(result.aRanges);
         mergeRanges(result.bRanges);
-        result.differenceCount = Math.max(result.aRanges.size(), result.bRanges.size());
-        // Count conceptual changed blocks even when one side contains only insertions/deletions.
-        result.differenceCount = Math.max(1, result.differenceCount);
         return result;
     }
 
@@ -1714,12 +1888,18 @@ public final class MainActivity extends Activity {
             if ((i & 8191) == 0) checkInterrupted();
             if (text.charAt(i) == '\n') {
                 int end = i + 1;
-                lines.add(new Line(text.substring(start, end), start, end));
+                lines.add(new Line(stripLineEnding(text.substring(start, end)), start, end));
                 start = end;
             }
         }
-        if (start < text.length()) lines.add(new Line(text.substring(start), start, text.length()));
+        if (start < text.length()) lines.add(new Line(stripLineEnding(text.substring(start)), start, text.length()));
         return lines;
+    }
+
+    private static String stripLineEnding(String value) {
+        int end = value.length();
+        while (end > 0 && (value.charAt(end - 1) == '\n' || value.charAt(end - 1) == '\r')) end--;
+        return end == value.length() ? value : value.substring(0, end);
     }
 
     private static List<Anchor> findLineAnchors(List<Line> a, List<Line> b) {
@@ -1732,7 +1912,7 @@ public final class MainActivity extends Activity {
             for (int i = n - 1; i >= 0; i--) {
                 checkInterrupted();
                 for (int j = m - 1; j >= 0; j--) {
-                    dp[i][j] = a.get(i).value.equals(b.get(j).value)
+                    dp[i][j] = a.get(i).key.equals(b.get(j).key)
                             ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
                 }
             }
@@ -1740,7 +1920,7 @@ public final class MainActivity extends Activity {
             int steps = 0;
             while (i < n && j < m) {
                 if ((steps++ & 1023) == 0) checkInterrupted();
-                if (a.get(i).value.equals(b.get(j).value)) {
+                if (a.get(i).key.equals(b.get(j).key)) {
                     result.add(new Anchor(i++, j++));
                 } else if (dp[i + 1][j] >= dp[i][j + 1]) i++;
                 else j++;
@@ -1751,12 +1931,12 @@ public final class MainActivity extends Activity {
         Map<String, ArrayDeque<Integer>> positions = new HashMap<>();
         for (int j = 0; j < m; j++) {
             if ((j & 1023) == 0) checkInterrupted();
-            positions.computeIfAbsent(b.get(j).value, k -> new ArrayDeque<>()).add(j);
+            positions.computeIfAbsent(b.get(j).key, k -> new ArrayDeque<>()).add(j);
         }
         int lastB = -1;
         for (int i = 0; i < n; i++) {
             if ((i & 1023) == 0) checkInterrupted();
-            ArrayDeque<Integer> queue = positions.get(a.get(i).value);
+            ArrayDeque<Integer> queue = positions.get(a.get(i).key);
             if (queue == null) continue;
             while (!queue.isEmpty() && queue.peekFirst() <= lastB) queue.removeFirst();
             if (!queue.isEmpty()) {
@@ -1768,119 +1948,170 @@ public final class MainActivity extends Activity {
         return result;
     }
 
-    private static void compareLineGap(List<Line> a, int aFrom, int aTo,
-                                       List<Line> b, int bFrom, int bTo, ComparisonResult result) {
-        int countA = aTo - aFrom;
-        int countB = bTo - bFrom;
-        int paired = Math.min(countA, countB);
+    /** Records one block of unmatched lines between two anchors as a Diff. */
+    private static void addBlock(String a, String b, List<Line> la, int aFrom, int aTo,
+                                 List<Line> lb, int bFrom, int bTo, ComparisonResult result) {
+        boolean hasA = aTo > aFrom;
+        boolean hasB = bTo > bFrom;
+        if (!hasA && !hasB) return;
         checkInterrupted();
-        for (int k = 0; k < paired; k++) {
-            if ((k & 1023) == 0) checkInterrupted();
-            Line la = a.get(aFrom + k);
-            Line lb = b.get(bFrom + k);
-            if (!la.value.equals(lb.value)) compareLineCharacters(la, lb, result);
-        }
-        for (int k = aFrom + paired; k < aTo; k++) {
-            if ((k & 1023) == 0) checkInterrupted();
-            Line line = a.get(k);
-            if (line.end > line.start) result.aRanges.add(new Range(line.start, line.end));
-        }
-        for (int k = bFrom + paired; k < bTo; k++) {
-            if ((k & 1023) == 0) checkInterrupted();
-            Line line = b.get(k);
-            if (line.end > line.start) result.bRanges.add(new Range(line.start, line.end));
-        }
-    }
-
-    private static void compareLineCharacters(Line a, Line b, ComparisonResult result) {
-        String left = a.value;
-        String right = b.value;
-        int[] acp = toCodePoints(left);
-        int[] bcp = toCodePoints(right);
-        int[] aOffsets = codePointOffsets(left, acp.length);
-        int[] bOffsets = codePointOffsets(right, bcp.length);
-        int n = acp.length;
-        int m = bcp.length;
-        if (n == 0 && m == 0) return;
-        if ((long) n * (long) m > CHAR_LCS_CELL_LIMIT) {
-            int prefix = 0;
-            while (prefix < n && prefix < m && acp[prefix] == bcp[prefix]) {
-                if ((prefix & 8191) == 0) checkInterrupted();
-                prefix++;
-            }
-            int suffix = 0;
-            while (suffix < n - prefix && suffix < m - prefix
-                    && acp[n - suffix - 1] == bcp[m - suffix - 1]) {
-                if ((suffix & 8191) == 0) checkInterrupted();
-                suffix++;
-            }
-            addCpRange(result.aRanges, a.start, aOffsets, prefix, n - suffix);
-            addCpRange(result.bRanges, b.start, bOffsets, prefix, m - suffix);
-            return;
-        }
-        int[][] dp = new int[n + 1][m + 1];
-        for (int i = n - 1; i >= 0; i--) {
-            checkInterrupted();
-            for (int j = m - 1; j >= 0; j--) {
-                dp[i][j] = acp[i] == bcp[j] ? dp[i + 1][j + 1] + 1
-                        : Math.max(dp[i + 1][j], dp[i][j + 1]);
-            }
-        }
-        int i = 0, j = 0;
-        int runA = -1, runB = -1;
-        while (i < n && j < m) {
-            if (acp[i] == bcp[j]) {
-                if (runA >= 0 || runB >= 0) {
-                    addCpRange(result.aRanges, a.start, aOffsets, Math.max(0, runA), i);
-                    addCpRange(result.bRanges, b.start, bOffsets, Math.max(0, runB), j);
-                    runA = runB = -1;
+        int aStart = aFrom < la.size() ? la.get(aFrom).start : a.length();
+        int aEnd = hasA ? la.get(aTo - 1).end : aStart;
+        int bStart = bFrom < lb.size() ? lb.get(bFrom).start : b.length();
+        int bEnd = hasB ? lb.get(bTo - 1).end : bStart;
+        int type = hasA && hasB ? Diff.CHANGED : hasA ? Diff.ONLY_A : Diff.ONLY_B;
+        Diff d = new Diff(type, aFrom, aTo, bFrom, bTo, aStart, aEnd, bStart, bEnd);
+        if (hasA && hasB) {
+            if (aTo - aFrom == bTo - bFrom && aTo - aFrom > 1) {
+                // Same number of lines on both sides: compare them pairwise.
+                for (int k = 0; k < aTo - aFrom; k++) {
+                    Line x = la.get(aFrom + k);
+                    Line y = lb.get(bFrom + k);
+                    markTokens(a, x.start, x.end, b, y.start, y.end, d);
                 }
-                i++; j++;
             } else {
-                if (runA < 0) runA = i;
-                if (runB < 0) runB = j;
-                if (dp[i + 1][j] >= dp[i][j + 1]) i++; else j++;
+                markTokens(a, aStart, aEnd, b, bStart, bEnd, d);
+            }
+            if (d.aMarks.isEmpty() && d.bMarks.isEmpty()) {
+                addMark(a, d.aMarks, aStart, aEnd);
+                addMark(b, d.bMarks, bStart, bEnd);
+            }
+        } else if (hasA) {
+            addMark(a, d.aMarks, aStart, aEnd);
+        } else {
+            addMark(b, d.bMarks, bStart, bEnd);
+        }
+        result.diffs.add(d);
+    }
+
+    /** Word/character level diff of two text regions; unmatched tokens become marks. */
+    private static void markTokens(String a, int aFrom, int aTo, String b, int bFrom, int bTo, Diff d) {
+        List<int[]> ta = tokenize(a, aFrom, aTo);
+        List<int[]> tb = tokenize(b, bFrom, bTo);
+        int n = ta.size();
+        int m = tb.size();
+        int pre = 0;
+        while (pre < n && pre < m && sameToken(a, ta.get(pre), b, tb.get(pre))) pre++;
+        int suf = 0;
+        while (suf < n - pre && suf < m - pre
+                && sameToken(a, ta.get(n - 1 - suf), b, tb.get(m - 1 - suf))) suf++;
+        boolean[] matchedA = new boolean[n];
+        boolean[] matchedB = new boolean[m];
+        for (int i = 0; i < pre; i++) { matchedA[i] = true; matchedB[i] = true; }
+        for (int k = 0; k < suf; k++) { matchedA[n - 1 - k] = true; matchedB[m - 1 - k] = true; }
+        int cn = n - pre - suf;
+        int cm = m - pre - suf;
+        if (cn > 0 && cm > 0 && (long) cn * (long) cm <= TOKEN_LCS_CELL_LIMIT) {
+            int[][] dp = new int[cn + 1][cm + 1];
+            for (int i = cn - 1; i >= 0; i--) {
+                checkInterrupted();
+                for (int j = cm - 1; j >= 0; j--) {
+                    dp[i][j] = sameToken(a, ta.get(pre + i), b, tb.get(pre + j))
+                            ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+                }
+            }
+            int i = 0, j = 0;
+            while (i < cn && j < cm) {
+                if (sameToken(a, ta.get(pre + i), b, tb.get(pre + j))) {
+                    matchedA[pre + i] = true;
+                    matchedB[pre + j] = true;
+                    i++; j++;
+                } else if (dp[i + 1][j] >= dp[i][j + 1]) i++;
+                else j++;
             }
         }
-        if (runA >= 0 || runB >= 0) {
-            addCpRange(result.aRanges, a.start, aOffsets, Math.max(0, runA), n);
-            addCpRange(result.bRanges, b.start, bOffsets, Math.max(0, runB), m);
+        collectMarks(a, ta, matchedA, d.aMarks);
+        collectMarks(b, tb, matchedB, d.bMarks);
+    }
+
+    private static boolean sameToken(String a, int[] x, String b, int[] y) {
+        int len = x[1] - x[0];
+        return len == y[1] - y[0] && a.regionMatches(x[0], b, y[0], len);
+    }
+
+    private static void collectMarks(String s, List<int[]> tokens, boolean[] matched, List<Range> out) {
+        int runStart = -1;
+        int runEnd = -1;
+        for (int k = 0; k <= tokens.size(); k++) {
+            boolean unmatched = k < tokens.size() && !matched[k];
+            if (unmatched) {
+                int[] t = tokens.get(k);
+                if (runStart < 0) runStart = t[0];
+                runEnd = t[1];
+            } else if (runStart >= 0) {
+                addMark(s, out, runStart, runEnd);
+                runStart = -1;
+            }
         }
     }
 
-    private static int[] toCodePoints(String text) {
-        int count = Character.codePointCount(text, 0, text.length());
-        int[] result = new int[count];
-        int charIndex = 0;
-        for (int i = 0; i < count; i++) {
-            if ((i & 8191) == 0) checkInterrupted();
-            int codePoint = Character.codePointAt(text, charIndex);
-            result[i] = codePoint;
-            charIndex += Character.charCount(codePoint);
+    private static void addMark(String s, List<Range> out, int start, int end) {
+        while (end > start && (s.charAt(end - 1) == '\n' || s.charAt(end - 1) == '\r')) end--;
+        while (start < end && (s.charAt(start) == '\n' || s.charAt(start) == '\r')) start++;
+        if (end <= start) return;
+        if (!out.isEmpty()) {
+            Range last = out.get(out.size() - 1);
+            if (last.end <= start && isBlankGap(s, last.end, start)) {
+                out.set(out.size() - 1, new Range(last.start, end));
+                return;
+            }
         }
-        return result;
+        out.add(new Range(start, end));
     }
 
-    private static int[] codePointOffsets(String text, int codePointCount) {
-        int[] offsets = new int[codePointCount + 1];
-        int charIndex = 0;
-        for (int i = 0; i < codePointCount; i++) {
-            if ((i & 8191) == 0) checkInterrupted();
-            offsets[i] = charIndex;
-            charIndex += Character.charCount(text.codePointAt(charIndex));
+    private static boolean isBlankGap(String s, int from, int to) {
+        if (to - from > 3) return false;
+        for (int i = from; i < to; i++) {
+            char c = s.charAt(i);
+            if (c != ' ' && c != '\t' && c != '\u3000') return false;
         }
-        offsets[codePointCount] = text.length();
-        return offsets;
+        return true;
     }
 
-    private static void addCpRange(List<Range> destination, int base, int[] offsets, int startCp, int endCp) {
-        int start = Math.max(0, Math.min(startCp, offsets.length - 1));
-        int end = Math.max(start, Math.min(endCp, offsets.length - 1));
-        if (end > start) destination.add(new Range(base + offsets[start], base + offsets[end]));
+    /** Words/numbers are one token, each CJK character or symbol is its own token. */
+    private static List<int[]> tokenize(String s, int from, int to) {
+        List<int[]> tokens = new ArrayList<>();
+        int i = from;
+        int steps = 0;
+        while (i < to) {
+            if ((steps++ & 4095) == 0) checkInterrupted();
+            int cp = s.codePointAt(i);
+            int j = i + Character.charCount(cp);
+            if (cp == '\n' || cp == '\r') {
+                // a line break is always its own token
+            } else if (Character.isWhitespace(cp)) {
+                while (j < to) {
+                    int c = s.codePointAt(j);
+                    if (c == '\n' || c == '\r' || !Character.isWhitespace(c)) break;
+                    j += Character.charCount(c);
+                }
+            } else if (isWordChar(cp)) {
+                while (j < to) {
+                    int c = s.codePointAt(j);
+                    if (!isWordChar(c)) break;
+                    j += Character.charCount(c);
+                }
+            }
+            tokens.add(new int[]{i, j});
+            i = j;
+        }
+        return tokens;
+    }
+
+    private static boolean isWordChar(int cp) {
+        return (Character.isLetterOrDigit(cp) || cp == '_') && !isCjk(cp);
+    }
+
+    private static boolean isCjk(int cp) {
+        return (cp >= 0x2E80 && cp <= 0x9FFF) || (cp >= 0xF900 && cp <= 0xFAFF)
+                || (cp >= 0xFF00 && cp <= 0xFFEF) || (cp >= 0x20000 && cp <= 0x2FFFF);
     }
 
     private static void checkInterrupted() {
-        if (Thread.currentThread().isInterrupted()) throw new CancellationException("Comparison superseded");
+        Long generation = TASK_GENERATION.get();
+        if (generation != null && generation.longValue() != LATEST_GENERATION) {
+            throw new CancellationException("Comparison superseded");
+        }
     }
 
     private static void mergeRanges(List<Range> ranges) {
