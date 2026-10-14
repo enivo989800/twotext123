@@ -18,8 +18,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      ANDROID_HOME: ${{ env.ANDROID_HOME || '/usr/local/lib/android/sdk' }}
-      ANDROID_SDK_ROOT: ${{ env.ANDROID_HOME || '/usr/local/lib/android/sdk' }}
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -35,7 +35,7 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      # The hosted Ubuntu runner already has Android command-line tools installed.
+      # Use the SDK command-line tools preinstalled on the hosted Ubuntu runner.
       # Avoid setup-android@v3's legacy "tools" package installation, which fails
       # because that package is no longer available in current SDK repositories.
       - name: Install Android platform and build tools
