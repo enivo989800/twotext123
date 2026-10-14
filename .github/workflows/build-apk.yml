@@ -47,7 +47,11 @@ jobs:
             echo "::error::Android sdkmanager was not found under $ANDROID_HOME/cmdline-tools"
             exit 1
           fi
+          # sdkmanager can close stdin after accepting licenses; ignore yes's SIGPIPE
+          # while preserving sdkmanager's own exit status.
+          set +o pipefail
           yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses >/dev/null
+          set -o pipefail
           "$SDKMANAGER" --sdk_root="$ANDROID_HOME" 'platforms;android-35' 'build-tools;35.0.0'
 
       - name: Build debug APK
