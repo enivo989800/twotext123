@@ -17,6 +17,9 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      ANDROID_HOME: ${{ env.ANDROID_HOME || '/usr/local/lib/android/sdk' }}
+      ANDROID_SDK_ROOT: ${{ env.ANDROID_HOME || '/usr/local/lib/android/sdk' }}
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -32,11 +35,20 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
+      # The hosted Ubuntu runner already has Android command-line tools installed.
+      # Avoid setup-android@v3's legacy "tools" package installation, which fails
+      # because that package is no longer available in current SDK repositories.
       - name: Install Android platform and build tools
-        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
+          if [ -z "$SDKMANAGER" ]; then
+            echo "::error::Android sdkmanager was not found under $ANDROID_HOME/cmdline-tools"
+            exit 1
+          fi
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses >/dev/null
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" 'platforms;android-35' 'build-tools;35.0.0'
 
       - name: Build debug APK
         run: gradle --no-daemon assembleDebug
